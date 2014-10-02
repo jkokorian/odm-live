@@ -130,7 +130,13 @@ class FitGraphWidget(qt.QWidget):
         pw = self.plotWidget
         self.livePlot = pw.plot()
         self.livePlot.setPen((200,200,100))
-                
+        
+        self.movingPeakFitPlot = pw.plot()
+        self.movingPeakFitPlot.setPen((200,0,0))
+        self.referencePeakFitPlot = pw.plot()
+        self.referencePeakFitPlot.setPen((0,200,0))
+        self.xValues = None
+        
         pw.setLabel('left', 'Intensity', units='a.u.')
         pw.setLabel('bottom', 'Position', units='px')
         pw.setXRange(0, 200)
@@ -138,10 +144,53 @@ class FitGraphWidget(qt.QWidget):
         
         pw.setAutoVisible(y=True)
     
-    def updateGraphData(self, intensityProfile):
+    def updateIntensityProfile(self, intensityProfile):
         xValues = np.arange(0,len(intensityProfile))
+        self.xValues = xValues
         self.livePlot.setData(y=intensityProfile, x=xValues)
-
+        
+    def updateGraphData(self, fitFunction_mp, popt_mp, fitFunction_ref,popt_ref):
+        self.movingPeakFitPlot.setData(x=self.xValues,y=fitFunction_mp(self.xValues,*popt_mp))
+        
+        self.referencePeakFitPlot.setData(x=self.xValues,y=fitFunction_ref(self.xValues,*popt_ref))
+    
+class RollingChartWidget(qt.QWidget):
+    def __init__(self,parent=None):
+        qt.QWidget.__init__(self,parent)
+        
+        self.initializeBuffer(5000)
+        
+        layout = qt.QVBoxLayout()
+        self.setLayout(layout)
+        
+        self.plotWidget = pg.PlotWidget()
+        self.livePlot = self.plotWidget.plot()
+        self.livePlot.setPen((200,200,100))
+        layout.addWidget(self.plotWidget)
+        
+    def initializeBuffer(self,size):
+        self._xBuffer = np.empty(size)   
+        self._yBuffer = np.empty(size)
+        self._xBuffer.fill(np.NAN)
+        self._yBuffer.fill(np.NAN)
+        self._bufferSize = size
+        self._bufferPointer = 0
+    
+    @property
+    def bufferSize(self):
+        return self._bufferSize
+        
+    @bufferSize.setter
+    def setBufferSize(self,size):
+        self._initializeBuffer(size)
+        
+    def addData(self,y):
+        i = self._bufferPointer % self._bufferSize
+        self._yBuffer[i] = y
+        self.livePlot.setData(y=self._yBuffer)
+        self._bufferPointer += 1
+            
+    
 
 class LVStatusDisplayWidget(qt.QWidget):
     def __init__(self,parent=None):
@@ -257,8 +306,14 @@ class RealTimeFitter(q.QObject):
         
         if self.canFit:
             try:
-                displacement_mp = self._getMovingPeakDisplacement(intensityProfile)
-                return dict(displacement_mp=displacement_mp)
+                displacement_mp, popt_mp = self._getMovingPeakDisplacement(intensityProfile)
+                displacement_ref, popt_ref = self._getReferencePeakDisplacement(intensityProfile)
+                return dict(displacement_mp=displacement_mp,
+                            displacement_ref=displacement_ref,
+                            popt_mp=popt_mp,
+                            popt_ref=popt_ref,
+                            fitFunction_mp=self._mpFitFunction,
+                            fitFunction_ref=self._refFitFunction)
             except Exception as e:
                 print e
         else:
@@ -269,14 +324,14 @@ class RealTimeFitter(q.QObject):
         ydata = intensityProfile[self._xminMp:self._xmaxMp]
         
         popt,pcov = curve_fit(self._mpFitFunction,xdata,ydata,p0=[0.0,1.0,0.0])
-        return self._mpFitFunction.getDisplacement(*popt)
+        return self._mpFitFunction.getDisplacement(*popt), popt
         
     def _getReferencePeakDisplacement(self,intensityProfile):
         xdata = np.arange(len(intensityProfile))[self._xminRef:self._xmaxRef]
         ydata = intensityProfile[self._xminRef:self._xmaxRef]
         
-        popt,pcov = curve_fit(self._mpFitFunction,xdata,ydata,p0=[0.0,1.0,0.0])
-        return self._refFitFunction.getDisplacement(*popt)
+        popt,pcov = curve_fit(self._refFitFunction,xdata,ydata,p0=[0.0,1.0,0.0])
+        return self._refFitFunction.getDisplacement(*popt), popt
     
     
     
@@ -338,10 +393,14 @@ class MainWindow(qt.QWidget):
         self.fitter = RealTimeFitter()
         
         self.lvClient = EmittingLVODMClient()
-        self.lvClient.connect("tcp://localhost:4567")
+        self.lvClient.connect("tcp://localhost:4562")
         
-        self.fitClient = ProcessingLVODMClient(lambda d: self.fitter.fit(d['intensityProfile']))
+        self.fitClient = ProcessingLVODMClient(lambda d: self.fitter.fit(d['Intensity Profile']))
         self.fitClient.connect("tcp://localhost:4562")
+        
+        
+        self.displacementChart = RollingChartWidget()
+        layout.addWidget(self.displacementChart)
         
         
         # connect signals and slots        
@@ -356,17 +415,23 @@ class MainWindow(qt.QWidget):
         
         
         
+        
     def handleLVData(self,lvData):
         status = lvData['Measurement Process State']
         intensityProfile = np.array(lvData['Intensity Profile'])
         
         self.liveGraph.updateGraphData(intensityProfile)
-        self.fitGraph.updateGraphData(intensityProfile)
+        self.fitGraph.updateIntensityProfile(intensityProfile)
         self.lvStatusDisplay.updateStatus(status)
     
     def handleFitResult(self,fitResult):
-        if fitResult is not None:        
-            print fitResult
+        if fitResult is not None and len(fitResult) != 0:
+            
+            self.fitGraph.updateGraphData(fitFunction_mp=fitResult['fitFunction_mp'],
+                                          fitFunction_ref=fitResult['fitFunction_ref'],
+                                          popt_mp=fitResult['popt_mp'],
+                                          popt_ref=fitResult['popt_ref'])
+            self.displacementChart.addData(y=fitResult['displacement_mp']-fitResult['displacement_ref'])                                  
     
     def show(self):
         super(MainWindow,self).show()

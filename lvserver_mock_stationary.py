@@ -10,7 +10,7 @@ context = zmq.Context()
 socket = context.socket(zmq.PUB)
 print socket.bind("tcp://*:4562")
 
-messageDict = dict(status="liveVideo")
+messageDict = {"Measurement Process State": "fake measurement in progress"}
 
 def gauss(x, mu, sigma):
     return np.exp(-(x-mu)**2/(2.*sigma**2))
@@ -18,12 +18,19 @@ def gauss(x, mu, sigma):
 print 'server online at port 4562'
 
 xValues = np.linspace(0,100,200)
-ipClean = gauss(xValues,30,5)+gauss(xValues,60,5)
 
+nsteps = 1000
+
+i=0
 while True:
+    
+    ipClean = gauss(xValues,30,5)+gauss(xValues,60,5)
     ip = np.random.poisson(ipClean*10000)
-    messageDict['intensityProfile'] = ip
+
+    messageDict['Intensity Profile'] = ip
+    messageDict['Actuator Voltage'] = 0.0
     messageBytes = msg.packb(messageDict)
     socket.send(messageBytes)
-    sleep(0.005)
+    sleep(0.02)
+    i+=1
     

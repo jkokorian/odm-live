@@ -1,5 +1,4 @@
 import zmq
-from random import randrange
 from time import sleep
 import msgpack as msg
 import msgpack_numpy

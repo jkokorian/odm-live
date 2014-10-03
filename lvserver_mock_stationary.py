@@ -10,7 +10,7 @@ context = zmq.Context()
 socket = context.socket(zmq.PUB)
 print socket.bind("tcp://*:4562")
 
-messageDict = {"Measurement Process State": "fake measurement in progress"}
+messageDict = {"Measurement Process State": "pretending to capture a stationary profile"}
 
 def gauss(x, mu, sigma):
     return np.exp(-(x-mu)**2/(2.*sigma**2))

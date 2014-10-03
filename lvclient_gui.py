@@ -10,6 +10,7 @@ import PyQt4.QtGui as qt
 
 import numpy as np
 import pyqtgraph as pg
+import pyqtgraph.dockarea as dock
 
 import zmq
 import msgpack as msg
@@ -46,9 +47,11 @@ class MeanRecorder(q.QObject):
             pass
 
 
-class LiveGraphWidget(qt.QWidget):
+class SplineCreatorWidget(qt.QWidget):
     movingPeakIntervalChanged = q.Signal(tuple)
     referencePeakIntervalChanged = q.Signal(tuple)
+    movingPeakFitFunctionChanged = q.Signal(fitfunctions.ScaledSpline)
+    referencePeakFitFunctionChanged = q.Signal(fitfunctions.ScaledSpline)
     
     def __init__(self,parent=None):        
         qt.QWidget.__init__(self,parent)
@@ -63,6 +66,15 @@ class LiveGraphWidget(qt.QWidget):
         layout.addWidget(self.plotWidget)
         
         self.meanRecorder = MeanRecorder()        
+        
+        self.refPeakSplineControl = InteractiveSplineCreatorControlsWidget(self.meanRecorder,parent=self)
+        self.movingPeakSplineControl = InteractiveSplineCreatorControlsWidget(self.meanRecorder,parent=self)
+        
+        hLayout = qt.QHBoxLayout()
+        hLayout.addWidget(self.refPeakSplineControl)
+        hLayout.addWidget(self.movingPeakSplineControl)
+        hLayout.addStretch()
+        layout.addLayout(hLayout)
         
         pw = self.plotWidget
         self.livePlot = pw.plot()
@@ -94,6 +106,10 @@ class LiveGraphWidget(qt.QWidget):
         self.referencePeakRegion.sigRegionChangeFinished.connect(self._emitReferencePeakIntervalChanged)
         self.movingPeakRegion.sigRegionChangeFinished.connect(self._emitMovingPeakIntervalChanged)
         
+        self.refPeakSplineControl.splineCreator.fitFunctionCreated.connect(self._emitReferencePeakFitFunctionChanged)
+        self.movingPeakSplineControl.splineCreator.fitFunctionCreated.connect(self._emitMovingPeakFitFunctionChanged)
+        
+        
         
     def _emitReferencePeakIntervalChanged(self):
         interval = self.referencePeakRegion.getRegion()
@@ -102,9 +118,16 @@ class LiveGraphWidget(qt.QWidget):
     def _emitMovingPeakIntervalChanged(self):
         interval = self.movingPeakRegion.getRegion()        
         self.movingPeakIntervalChanged.emit(interval)
+    
+    def _emitMovingPeakFitFunctionChanged(self,spline):
+        self.movingPeakFitFunctionChanged.emit(spline)
+        
+    def _emitReferencePeakFitFunctionChanged(self,spline):
+        self.referencePeakFitFunctionChanged.emit(spline)
         
     
-    def updateGraphData(self, intensityProfile):
+    
+    def updateData(self, intensityProfile):
         xValues = np.arange(0,len(intensityProfile))
         self.livePlot.setData(y=intensityProfile, x=xValues)
         self.meanRecorder.record(intensityProfile)
@@ -258,7 +281,7 @@ class InteractiveSplineCreator(q.QObject):
         self.fitFunctionCreated.emit(spline)
         
 
-class InteractiveSplineCreatorWidget(qt.QWidget):
+class InteractiveSplineCreatorControlsWidget(qt.QWidget):
     def __init__(self,meanRecorder, parent=None):
         qt.QWidget.__init__(self,parent)
         
@@ -303,7 +326,6 @@ class RealTimeFitter(q.QObject):
         return self._mpFitFunction is not None and self._xminRef is not None and self._xmaxRef is not None and self._xminMp is not None and self._xmaxMp is not None
     
     def fit(self,intensityProfile):
-        
         if self.canFit:
             try:
                 displacement_mp, popt_mp = self._getMovingPeakDisplacement(intensityProfile)
@@ -336,7 +358,7 @@ class RealTimeFitter(q.QObject):
     
     
     def setReferencePeakFitFunction(self,fitFunction):
-        print fitFunction
+        print "ref. fitfunction: %s" % fitFunction
         self._refFitFunction = fitFunction
         
     def setReferencePeakInterval(self,interval):
@@ -351,45 +373,57 @@ class RealTimeFitter(q.QObject):
 
         
     def setMovingPeakFitFunction(self,fitFunction):
-        print fitFunction
+        "mp. fitfunction: %s" % fitFunction
         self._mpFitFunction = fitFunction
         
         
     
 
 
-class MainWindow(qt.QWidget):
+class MainWindow(qt.QMainWindow):
     def __init__(self, parent=None):
-        qt.QWidget.__init__(self,parent)
+        qt.QMainWindow.__init__(self,parent)
         
         self.setWindowTitle("Live ODM Analysis")
-        self.resize(800,800)
+        self.resize(1000,800)
         
-        layout = qt.QVBoxLayout()                
-        self.setLayout(layout)
-
-        self.liveGraph = LiveGraphWidget(self)
-        layout.addWidget(self.liveGraph)        
+        area=dock.DockArea()
+        self.dockArea = area
+        self.setCentralWidget(area)
+        
+        #create docks
+        d1 = dock.Dock("Spline Creator", size=(500, 500))     ## give this dock the minimum possible size
+        d2 = dock.Dock("LabView Status", size=(1,100))
+        d3 = dock.Dock("Fit result", size=(500,400))
+        d4 = dock.Dock("Displacement", size=(500,200))
+        
+        area.addDock(d1, 'left')      ## place d1 at left edge of dock area (it will fill the whole space since there are no other docks yet)
+        area.addDock(d2, 'bottom', d1)     ## place d2 at right edge of dock area
+        area.addDock(d3, 'bottom', d2)## place d3 at bottom edge of d1
+        area.addDock(d4, 'right')     ## place d4 at right edge of dock area
+        
+        self.splineCreatorWidget = SplineCreatorWidget(self)
+        d1.addWidget(self.splineCreatorWidget)        
         
         self.lvStatusDisplay = LVStatusDisplayWidget(self)
         hLayout = qt.QHBoxLayout()
         hLayout.addWidget(self.lvStatusDisplay)
         hLayout.addStretch()
-        layout.addLayout(hLayout)
+        w2 = qt.QWidget()
+        w2.setLayout(hLayout)        
+        d2.addWidget(w2)
         
-        self.refPeakSplineWidget = InteractiveSplineCreatorWidget(self.liveGraph.meanRecorder,parent=self)
-        self.movingPeakSplineWidget = InteractiveSplineCreatorWidget(self.liveGraph.meanRecorder,parent=self)
         
-        hLayout = qt.QHBoxLayout()
-        hLayout.addWidget(self.refPeakSplineWidget)
-        hLayout.addWidget(self.movingPeakSplineWidget)
-        hLayout.addStretch()
-        layout.addLayout(hLayout)
         
         
         self.fitGraph = FitGraphWidget(self)
-        layout.addWidget(self.fitGraph)
+        d3.addWidget(self.fitGraph)
 
+                
+        self.displacementChart = RollingChartWidget()
+        d4.addWidget(self.displacementChart)
+        
+        
         self.fitter = RealTimeFitter()
         
         self.lvClient = EmittingLVODMClient()
@@ -399,28 +433,22 @@ class MainWindow(qt.QWidget):
         self.fitClient.connect("tcp://localhost:4562")
         
         
-        self.displacementChart = RollingChartWidget()
-        layout.addWidget(self.displacementChart)
-        
-        
         # connect signals and slots        
         self.lvClient.messageReceived.connect(self.handleLVData)
         self.fitClient.messageProcessed.connect(self.handleFitResult)
+                
+        self.splineCreatorWidget.referencePeakIntervalChanged.connect(self.fitter.setReferencePeakInterval)
+        self.splineCreatorWidget.movingPeakIntervalChanged.connect(self.fitter.setMovingPeakInterval)
         
-        self.refPeakSplineWidget.splineCreator.fitFunctionCreated.connect(self.fitter.setReferencePeakFitFunction)
-        self.movingPeakSplineWidget.splineCreator.fitFunctionCreated.connect(self.fitter.setMovingPeakFitFunction)
-        
-        self.liveGraph.referencePeakIntervalChanged.connect(self.fitter.setReferencePeakInterval)
-        self.liveGraph.movingPeakIntervalChanged.connect(self.fitter.setMovingPeakInterval)
-        
-        
+        self.splineCreatorWidget.movingPeakFitFunctionChanged.connect(self.fitter.setMovingPeakFitFunction)
+        self.splineCreatorWidget.referencePeakFitFunctionChanged.connect(self.fitter.setReferencePeakFitFunction)
         
         
     def handleLVData(self,lvData):
         status = lvData['Measurement Process State']
         intensityProfile = np.array(lvData['Intensity Profile'])
         
-        self.liveGraph.updateGraphData(intensityProfile)
+        self.splineCreatorWidget.updateData(intensityProfile)
         self.fitGraph.updateIntensityProfile(intensityProfile)
         self.lvStatusDisplay.updateStatus(status)
     

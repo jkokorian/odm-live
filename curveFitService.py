@@ -9,6 +9,7 @@ import time
 import multiprocessing as mp
 import sys
 import pickle
+from PyQt4 import QtCore, QtGui
 
 class RealTimeFitter(object):
     def __init__(self):
@@ -140,6 +141,7 @@ class FittingConsumer():
         self.collector_socket.close()
         self.control_socket.close()
         self.context.destroy()
+        print "aborted"
             
     def _handleRPC(self,rpc):
         if rpc['method'] == 'stopFitting':
@@ -171,7 +173,7 @@ class FittingConsumer():
         if self.state == "fitting" and self.fitter.canFit:
             try:        
                 fitResult = self.fitter.fit(lvdata['Intensity Profile'])
-                self.collector_socket.send(msg.packb(fitResult))
+                self.collector_socket.send_pyobj(fitResult)
             except:
                 pass
 
@@ -185,7 +187,7 @@ class CurveFitServiceController(object):
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.PUSH)
         if controlAddress == None:
-            port = self._socket.bind_to_random_port("tcp://localhost")
+            port = self._socket.bind_to_random_port("tcp://127.0.0.1")
             controlAddress = "tcp://localhost:%i" % port
             print controlAddress
         else:
@@ -232,8 +234,42 @@ class CurveFitServiceController(object):
         self._socket.send_pyobj(rpc)
         
 
+class CurveFitServiceCollector(QtCore.QThread):
+    resultReceived = QtCore.Signal(dict)
+    def __init__(self,address = None):
+        QtCore.QThread.__init__(self)        
+        self._context = zmq.Context()
+        self._socket = self._context.socket(zmq.PULL)
+                
+        if (address is None):
+            port = self._socket.bind_to_random_port("tcp://127.0.0.1")
+            address = "tcp://127.0.0.1:%i" % port
+        else:
+            self._socket.bind(address)
+        self._address = address
+        self._aborted = False        
+        
+    def run(self):
+        while self._aborted == False:
+            if self._socket.poll(timeout=10):
+                result = self._socket.recv_pyobj()
+                self.resultReceived.emit(result)
+                
+        #abort logic
+        self._socket.close()
+        self._context.destroy()
+                
+    def abort(self):
+        self._aborted = True
+    
+        
+    @property
+    def address(self):
+        return self._address
+        
+
     
 if __name__=="__main__":
-    cfc = CurveFitServiceController("tcp://localhost:4562","tcp://localhost:4563","tcp://127.0.0.1:4568")
+    cfc = CurveFitServiceController("tcp://localhost:4562","tcp://localhost:4563")
     time.sleep(2)    
-    cfc.printState()
+    cfc.abort()

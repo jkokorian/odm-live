@@ -24,6 +24,7 @@ class EmittingLVODMClient(QtCore.QObject):
             
     def abort(self):
         self.consumer.abort()
+        self.context.destroy()
     
     def connect(self,host):
         self.socket.connect(host)

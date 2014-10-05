@@ -26,6 +26,8 @@ import time
 from scipy.optimize import curve_fit
 
 
+from CurveFitService import CurveFitServiceController, CurveFitServiceCollector
+
 class MeanRecorder(q.QObject):
     def __init__(self):
         q.QObject.__init__(self)
@@ -423,6 +425,19 @@ class RealTimeFitter(q.QObject):
         """
         pass
         
+
+class FitControlWidget(qt.QWidget):
+    def __init__(self,parent=None):
+        qt.QWidget.__init__(self,parent)
+        
+        layout = qt.QHBoxLayout()
+        self.setLayout(layout)
+        
+        self.startButton = qt.QPushButton("start fit")
+        layout.addWidget(self.startButton)
+        
+        self.stopButton = qt.QPushButton("stop fit")
+        layout.addWidget(self.stopButton)
         
 
 
@@ -441,11 +456,13 @@ class MainWindow(qt.QMainWindow):
         d2 = dock.Dock("LabView Status", size=(1,100))
         d3 = dock.Dock("Fit result", size=(500,400))
         d4 = dock.Dock("Displacement", size=(500,200))
+        d5 = dock.Dock("Fit Controls", size=(1,100))
         
         area.addDock(d1, 'left')      ## place d1 at left edge of dock area (it will fill the whole space since there are no other docks yet)
         area.addDock(d2, 'bottom', d1)     ## place d2 at right edge of dock area
         area.addDock(d3, 'bottom', d2)## place d3 at bottom edge of d1
         area.addDock(d4, 'right')     ## place d4 at right edge of dock area
+        area.addDock(d5, 'bottom', d2)        
         
         self.splineCreatorWidget = SplineCreatorWidget(self)
         d1.addWidget(self.splineCreatorWidget)        
@@ -466,25 +483,30 @@ class MainWindow(qt.QMainWindow):
         self.displacementChart = RollingChartWidget()
         d4.addWidget(self.displacementChart)
         
-        
-        self.fitter = RealTimeFitter()
+        self.fitControls = FitControlWidget(self)
+        d5.addWidget(self.fitControls)
         
         self.lvClient = EmittingLVODMClient()
         self.lvClient.connect("tcp://localhost:4562")
         
-        self.fitClient = ProcessingLVODMClient(lambda d: self.fitter.fit(d['Intensity Profile']))
-        self.fitClient.connect("tcp://localhost:4562")
-        
+        #self.fitClient = ProcessingLVODMClient(lambda d: self.fitter.fit(d['Intensity Profile']))
+        #self.fitClient.connect("tcp://localhost:4562")
+        self.fitCollectorThread = CurveFitServiceCollector()
+        self.fitServiceController = CurveFitServiceController(producerAddress="tcp://localhost:4562",
+                                                              collectorAddress=self.fitCollectorThread.address)
         
         # connect signals and slots        
         self.lvClient.messageReceived.connect(self.handleLVData)
-        self.fitClient.messageProcessed.connect(self.handleFitResult)
+        self.fitCollectorThread.resultReceived.connect(self.handleFitResult)
                 
-        self.splineCreatorWidget.referencePeakIntervalChanged.connect(self.fitter.setReferencePeakInterval)
-        self.splineCreatorWidget.movingPeakIntervalChanged.connect(self.fitter.setMovingPeakInterval)
+        self.splineCreatorWidget.referencePeakIntervalChanged.connect(self.fitServiceController.setReferencePeakInterval)
+        self.splineCreatorWidget.movingPeakIntervalChanged.connect(self.fitServiceController.setMovingPeakInterval)
         
-        self.splineCreatorWidget.movingPeakFitFunctionChanged.connect(self.fitter.setMovingPeakFitFunction)
-        self.splineCreatorWidget.referencePeakFitFunctionChanged.connect(self.fitter.setReferencePeakFitFunction)
+        self.splineCreatorWidget.movingPeakFitFunctionChanged.connect(self.fitServiceController.setMovingPeakFitFunction)
+        self.splineCreatorWidget.referencePeakFitFunctionChanged.connect(self.fitServiceController.setReferencePeakFitFunction)
+        
+        self.fitControls.startButton.clicked.connect(self.fitServiceController.startFitting)
+        self.fitControls.stopButton.clicked.connect(self.fitServiceController.stopFitting)
         
         
     def handleLVData(self,lvData):
@@ -507,7 +529,7 @@ class MainWindow(qt.QMainWindow):
     def show(self):
         super(MainWindow,self).show()
         self.lvClient.startAsync()
-        self.fitClient.startAsync()
+        self.fitCollectorThread.start()
 
     def closeEvent(self,event):
         self._abortClients()
@@ -517,7 +539,8 @@ class MainWindow(qt.QMainWindow):
     def _abortClients(self):
         print "aborting"
         self.lvClient.abort()
-        self.fitClient.abort()
+        self.fitServiceController.abort()
+        self.fitCollectorThread.abort()
     
     
 

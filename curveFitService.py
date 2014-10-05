@@ -8,6 +8,7 @@ from scipy.optimize import curve_fit
 import time
 import multiprocessing as mp
 import sys
+import pickle
 
 class RealTimeFitter(object):
     def __init__(self):
@@ -114,14 +115,16 @@ class FittingConsumer():
         
         self.state = "idle"
         
+        
     def run(self):
         print "running"
         while self.state is not "aborted":
-            sockets = dict(self.poller.poll())
+                       
+            sockets = dict(self.poller.poll(timeout=0))
             
             if self.control_socket in sockets and sockets[self.control_socket] == zmq.POLLIN:
-                message = self.control_socket.recv()
-                rpc = msg.unpackb(message)
+                
+                rpc = self.control_socket.recv_pyobj()
                 self._handleRPC(rpc)
                 
             if self.producer_socket in sockets and sockets[self.producer_socket] == zmq.POLLIN:
@@ -129,8 +132,14 @@ class FittingConsumer():
                 message = self.producer_socket.recv()
                 lvdata = msg.unpackb(message)
                 self._handleProducerData(lvdata)
-            
-            time.sleep(1e-8)
+            if not sockets:
+                time.sleep(1e-3)
+        
+        #abort logic
+        self.producer_socket.close()
+        self.collector_socket.close()
+        self.control_socket.close()
+        self.context.destroy()
             
     def _handleRPC(self,rpc):
         if rpc['method'] == 'stopFitting':
@@ -156,6 +165,7 @@ class FittingConsumer():
             self.state = "aborted"
         elif rpc['method'] == 'printState':
             print self.state
+            
 
     def _handleProducerData(self,lvdata):
         if self.state == "fitting" and self.fitter.canFit:
@@ -164,13 +174,66 @@ class FittingConsumer():
                 self.collector_socket.send(msg.packb(fitResult))
             except:
                 pass
-            
-def fitConsumeWorker():
-    fittingConsumer = FittingConsumer("tcp://localhost:4562","tcp://localhost:4563","tcp://localhost:4568")
+
+def fitConsumeWorker(producerAddress, collectorAddress, controlAddress):
+    fittingConsumer = FittingConsumer(producerAddress, collectorAddress, controlAddress)
     fittingConsumer.run()
+
+
+class CurveFitServiceController(object):
+    def __init__(self, producerAddress, collectorAddress, controlAddress=None):
+        self._context = zmq.Context()
+        self._socket = self._context.socket(zmq.PUSH)
+        if controlAddress == None:
+            port = self._socket.bind_to_random_port("tcp://localhost")
+            controlAddress = "tcp://localhost:%i" % port
+            print controlAddress
+        else:
+            self._socket.bind(controlAddress)
+        
+        self._socket.setsockopt(zmq.LINGER, 100)
+        mp.Process(target=fitConsumeWorker,args=(producerAddress,collectorAddress,controlAddress)).start()
+    
+    
+    def setReferencePeakFitFunction(self,fitFunction):
+        rpc = dict(method="setReferencePeakFitFunction",
+                   params=dict(fitFunction=fitFunction))
+        self._socket.send_pyobj(rpc)
+        
+    def setReferencePeakInterval(self,interval):
+        rpc = dict(method="setReferencePeakInterval",
+                   params=dict(interval=interval))
+        self._socket.send_pyobj(rpc)
+
+    def setMovingPeakInterval(self,interval):
+        rpc = dict(method="setMovingPeakInterval",
+                   params=dict(interval=interval))
+        self._socket.send_pyobj(rpc)
+        
+    def setMovingPeakFitFunction(self,fitFunction):
+        rpc = dict(method="setMovingPeakFitFunction",
+                   params=dict(fitFunction=fitFunction))
+        self._socket.send_pyobj(rpc)
+        
+    def abort(self):
+        rpc = dict(method="abort")
+        self._socket.send_pyobj(rpc)
+        
+    def stopFitting(self):
+        rpc = dict(method="stopFitting")
+        self._socket.send_pyobj(rpc)
+    
+    def startFitting(self):
+        rpc = dict(method="startFitting")
+        self._socket.send_pyobj(rpc)
+        
+    def printState(self):
+        rpc = dict(method="printState")
+        self._socket.send_pyobj(rpc)
+        
 
     
 if __name__=="__main__":
-    
-    fitConsumeWorker()
-    
+    cfc = CurveFitServiceController("tcp://localhost:4562","tcp://localhost:4563","tcp://127.0.0.1:4568")
+    time.sleep(2)    
+    cfc.printState()

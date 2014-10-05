@@ -47,6 +47,9 @@ class MeanRecorder(q.QObject):
             pass
 
 
+class SplineCreatorState(q.QObject):
+    pass
+
 class SplineCreatorWidget(qt.QWidget):
     movingPeakIntervalChanged = q.Signal(tuple)
     referencePeakIntervalChanged = q.Signal(tuple)
@@ -56,16 +59,29 @@ class SplineCreatorWidget(qt.QWidget):
     def __init__(self,parent=None):        
         qt.QWidget.__init__(self,parent)
         
+        self.isRecording = False        
+        
         layout = qt.QVBoxLayout()
         self.setLayout(layout)
         
-        self.toggleButton = qt.QPushButton("record reference")
-        layout.addWidget(self.toggleButton)
+        buttonStrip = qt.QHBoxLayout()
         
-        self.plotWidget = pg.PlotWidget(name='Intensity Profile')
+        self.startRecordingButton = qt.QPushButton("start recording",self)
+        self.startRecordingButton.setIcon(qt.QIcon(qt.QStyle.SP_MediaPlay))
+        self.startRecordingButton.setIconSize(q.QSize(24,24))
+        buttonStrip.addWidget(self.startRecordingButton)
+        
+        self.stopRecordingButton = qt.QPushButton("stop recording",self)
+        self.stopRecordingButton.setIcon(qt.QIcon(qt.QStyle.SP_MediaStop))
+        self.stopRecordingButton.setIconSize(q.QSize(24,24))
+        buttonStrip.addWidget(self.stopRecordingButton)
+        
+        layout.addLayout(buttonStrip)
+        
+        self.plotWidget = pg.PlotWidget(name='Intensity Profile',parent=self)
         layout.addWidget(self.plotWidget)
         
-        self.meanRecorder = MeanRecorder()        
+        self.meanRecorder = MeanRecorder()
         
         self.refPeakSplineControl = InteractiveSplineCreatorControlsWidget(self.meanRecorder,parent=self)
         self.movingPeakSplineControl = InteractiveSplineCreatorControlsWidget(self.meanRecorder,parent=self)
@@ -90,26 +106,45 @@ class SplineCreatorWidget(qt.QWidget):
         
         self.movingPeakRegion = pg.LinearRegionItem(brush=pg.intColor(1,alpha=100))
         self.movingPeakRegion.setZValue(10)
+        self.movingPeakRegionLabel = pg.TextItem("moving peak",color=pg.intColor(1),
+                                                 anchor=(0,1))
+        self.movingPeakRegionLabel.setX(self.movingPeakRegion.getRegion()[0])
+        pw.addItem(self.movingPeakRegionLabel)                
+        pw.addItem(self.movingPeakRegion, ignoreBounds=True)
         
         self.referencePeakRegion = pg.LinearRegionItem(brush=pg.intColor(2,alpha=100))
         self.referencePeakRegion.setZValue(10)
-        # Add the LinearRegionItem to the ViewBox, but tell the ViewBox to exclude this 
-        # item when doing auto-range calculations.
-        pw.addItem(self.movingPeakRegion, ignoreBounds=True)
+        self.referencePeakRegionLabel = pg.TextItem("reference peak",color=pg.intColor(2),
+                                                 anchor=(0,2))
+        self.referencePeakRegionLabel.setX(self.referencePeakRegion.getRegion()[0])
+        pw.addItem(self.referencePeakRegionLabel)
         pw.addItem(self.referencePeakRegion, ignoreBounds=True)
-        #pg.dbg()
+        
+        
+        
         pw.setAutoVisible(y=True)
         
         
         # connect signals and slots
-        self.toggleButton.clicked.connect(self.meanRecorder.reset)
+        self.startRecordingButton.clicked.connect(self._startRecording)
+        self.stopRecordingButton.clicked.connect(self._stopRecording)
+        
         self.referencePeakRegion.sigRegionChangeFinished.connect(self._emitReferencePeakIntervalChanged)
         self.movingPeakRegion.sigRegionChangeFinished.connect(self._emitMovingPeakIntervalChanged)
+        self.referencePeakRegion.sigRegionChanged.connect(lambda r: self.referencePeakRegionLabel.setX(r.getRegion()[0]))        
+        self.movingPeakRegion.sigRegionChanged.connect(lambda r: self.movingPeakRegionLabel.setX(r.getRegion()[0]))        
+        
         
         self.refPeakSplineControl.splineCreator.fitFunctionCreated.connect(self._emitReferencePeakFitFunctionChanged)
         self.movingPeakSplineControl.splineCreator.fitFunctionCreated.connect(self._emitMovingPeakFitFunctionChanged)
         
         
+    def _startRecording(self):
+        self.isRecording = True
+        self.meanRecorder.reset()
+    
+    def _stopRecording(self):
+        self.isRecording = False
         
     def _emitReferencePeakIntervalChanged(self):
         interval = self.referencePeakRegion.getRegion()
@@ -126,13 +161,14 @@ class SplineCreatorWidget(qt.QWidget):
         self.referencePeakFitFunctionChanged.emit(spline)
         
     
-    
     def updateData(self, intensityProfile):
         xValues = np.arange(0,len(intensityProfile))
         self.livePlot.setData(y=intensityProfile, x=xValues)
-        self.meanRecorder.record(intensityProfile)
         self.meanPlot.setData(y=self.meanRecorder.profile, x=xValues)
-    
+            
+        if self.isRecording:
+            self.meanRecorder.record(intensityProfile)
+        
 
 
 class FitGraphWidget(qt.QWidget):
@@ -320,6 +356,8 @@ class RealTimeFitter(q.QObject):
         self._xmaxRef = None
         self._xminMp = None
         self._xmaxMp = None
+        self._refEstimates = [0.0,1.0,0.0]
+        self._mpEstimates = [0.0,1.0,0.0]
         
     @property        
     def canFit(self):
@@ -345,14 +383,16 @@ class RealTimeFitter(q.QObject):
         xdata = np.arange(len(intensityProfile))[self._xminMp:self._xmaxMp]
         ydata = intensityProfile[self._xminMp:self._xmaxMp]
         
-        popt,pcov = curve_fit(self._mpFitFunction,xdata,ydata,p0=[0.0,1.0,0.0])
+        popt,pcov = curve_fit(self._mpFitFunction,xdata,ydata,p0=self._mpEstimates)
+        self._mpEstimates = popt
         return self._mpFitFunction.getDisplacement(*popt), popt
         
     def _getReferencePeakDisplacement(self,intensityProfile):
         xdata = np.arange(len(intensityProfile))[self._xminRef:self._xmaxRef]
         ydata = intensityProfile[self._xminRef:self._xmaxRef]
         
-        popt,pcov = curve_fit(self._refFitFunction,xdata,ydata,p0=[0.0,1.0,0.0])
+        popt,pcov = curve_fit(self._refFitFunction,xdata,ydata,p0=self._refEstimates)
+        self._refEstimates = popt
         return self._refFitFunction.getDisplacement(*popt), popt
     
     
@@ -377,7 +417,13 @@ class RealTimeFitter(q.QObject):
         self._mpFitFunction = fitFunction
         
         
-    
+    def reset(self):
+        """
+        Resets the stored curve-fit estimates to the default values.
+        """
+        pass
+        
+        
 
 
 class MainWindow(qt.QMainWindow):
@@ -391,7 +437,6 @@ class MainWindow(qt.QMainWindow):
         self.dockArea = area
         self.setCentralWidget(area)
         
-        #create docks
         d1 = dock.Dock("Spline Creator", size=(500, 500))     ## give this dock the minimum possible size
         d2 = dock.Dock("LabView Status", size=(1,100))
         d3 = dock.Dock("Fit result", size=(500,400))
@@ -412,8 +457,6 @@ class MainWindow(qt.QMainWindow):
         w2 = qt.QWidget()
         w2.setLayout(hLayout)        
         d2.addWidget(w2)
-        
-        
         
         
         self.fitGraph = FitGraphWidget(self)

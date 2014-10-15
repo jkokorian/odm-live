@@ -202,6 +202,11 @@ class CurveFitServiceController(object):
                    params=dict(fitFunction=fitFunction))
         self._socket.send_pyobj(rpc)
         
+    def setMovingPeakFitFunction(self,fitFunction):
+        rpc = dict(method="setMovingPeakFitFunction",
+                   params=dict(fitFunction=fitFunction))
+        self._socket.send_pyobj(rpc)
+        
     def setReferencePeakInterval(self,interval):
         rpc = dict(method="setReferencePeakInterval",
                    params=dict(interval=interval))
@@ -210,11 +215,6 @@ class CurveFitServiceController(object):
     def setMovingPeakInterval(self,interval):
         rpc = dict(method="setMovingPeakInterval",
                    params=dict(interval=interval))
-        self._socket.send_pyobj(rpc)
-        
-    def setMovingPeakFitFunction(self,fitFunction):
-        rpc = dict(method="setMovingPeakFitFunction",
-                   params=dict(fitFunction=fitFunction))
         self._socket.send_pyobj(rpc)
         
     def abort(self):

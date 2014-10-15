@@ -25,8 +25,9 @@ import time
 
 from scipy.optimize import curve_fit
 
-
 from CurveFitService import CurveFitServiceController, CurveFitServiceCollector
+
+import argparse
 
 class MeanRecorder(q.QObject):
     def __init__(self):
@@ -164,12 +165,18 @@ class SplineCreatorWidget(qt.QWidget):
         
     
     def updateData(self, intensityProfile):
-        xValues = np.arange(0,len(intensityProfile))
+        length = len(intensityProfile)
+        xValues = np.arange(0,length)
+        
+        if self.isRecording:
+            if (self.meanRecorder.profile is not None and len(self.meanRecorder.profile) != length):
+                self.meanRecorder.reset()
+            self.meanRecorder.record(intensityProfile)        
+        
         self.livePlot.setData(y=intensityProfile, x=xValues)
         self.meanPlot.setData(y=self.meanRecorder.profile, x=xValues)
             
-        if self.isRecording:
-            self.meanRecorder.record(intensityProfile)
+        
         
 
 
@@ -415,7 +422,7 @@ class RealTimeFitter(q.QObject):
 
         
     def setMovingPeakFitFunction(self,fitFunction):
-        "mp. fitfunction: %s" % fitFunction
+        print "mp. fitfunction: %s" % fitFunction
         self._mpFitFunction = fitFunction
         
         
@@ -442,8 +449,10 @@ class FitControlWidget(qt.QWidget):
 
 
 class MainWindow(qt.QMainWindow):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, lvport=4562):
         qt.QMainWindow.__init__(self,parent)
+        
+        self._lvAddress = r"tcp://localhost:%i" % lvport
         
         self.setWindowTitle("Live ODM Analysis")
         self.resize(1000,800)
@@ -487,12 +496,12 @@ class MainWindow(qt.QMainWindow):
         d5.addWidget(self.fitControls)
         
         self.lvClient = EmittingLVODMClient()
-        self.lvClient.connect("tcp://localhost:4562")
+        self.lvClient.connect(self._lvAddress)
         
         #self.fitClient = ProcessingLVODMClient(lambda d: self.fitter.fit(d['Intensity Profile']))
         #self.fitClient.connect("tcp://localhost:4562")
         self.fitCollectorThread = CurveFitServiceCollector()
-        self.fitServiceController = CurveFitServiceController(producerAddress="tcp://localhost:4562",
+        self.fitServiceController = CurveFitServiceController(producerAddress=self._lvAddress,
                                                               collectorAddress=self.fitCollectorThread.address)
         
         # connect signals and slots        
@@ -542,13 +551,23 @@ class MainWindow(qt.QMainWindow):
         self.fitServiceController.abort()
         self.fitCollectorThread.abort()
     
+
     
 
 ## Start Qt event loop unless running in interactive mode or using pyside.
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Interactive odm gui")
+    parser.add_argument('--port','-p',
+                        type=int,
+                        help="Localhost port of the labview odm measurement process.",
+                        default=4562)
+    args = parser.parse_args()
+    
+    
     #QtGui.QApplication.setGraphicsSystem('raster')
     app = qt.QApplication([])
-    mw = MainWindow()
+    print args
+    mw = MainWindow(lvport=args.port)
     mw.show()
 
     import sys
